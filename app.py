@@ -5,20 +5,22 @@ import re
 import io
 import zipfile
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Apuração DIFAL/ST/FCP", layout="wide")
+# --- CONFIGURAÇÃO INTERFACE ---
+st.set_page_config(page_title="Analise Difal ST FECP", layout="wide")
+st.title("📊 Apuração Consolidada: ST, DIFAL e FECP")
 
 UFS_BRASIL = ['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO']
 
-# --- MOTOR DE LEITURA (EXTRAÇÃO) ---
+# --- MOTOR DE EXTRAÇÃO ---
 def safe_float(v):
-    if not v: return 0.0
+    if v is None: return 0.0
     try:
         return float(str(v).replace(',', '.'))
     except:
         return 0.0
 
 def buscar_tag(tag, no):
+    if no is None: return ""
     for elemento in no.iter():
         if elemento.tag.split('}')[-1] == tag:
             return elemento.text
@@ -29,22 +31,22 @@ def processar_xml(content, cnpj_auditado):
         xml_str = re.sub(r'\sxmlns(:\w+)?="[^"]+"', '', content.decode('utf-8', errors='ignore'))
         root = ET.fromstring(xml_str)
         
-        # Identificação básica
         emit = root.find('.//emit')
         dest = root.find('.//dest')
         ide = root.find('.//ide')
         cnpj_emit = re.sub(r'\D', '', buscar_tag('CNPJ', emit) or "")
         cnpj_alvo = re.sub(r'\D', '', cnpj_auditado)
         
+        # Define se é entrada ou saída para a empresa auditada
         tipo_operacao = "SAIDA" if cnpj_emit == cnpj_alvo else "ENTRADA"
         
-        dados = []
+        dados_xml = []
         for det in root.findall('.//det'):
             prod = det.find('prod')
             icms = det.find('.//ICMS')
             imp = det.find('.//imposto')
             
-            # Captura de valores conforme regra de consolidação
+            # Tags de Valor Puro e FCP
             v_st = safe_float(buscar_tag('vICMSST', icms))
             v_fcp_st = safe_float(buscar_tag('vFCPST', icms))
             v_difal = safe_float(buscar_tag('vICMSUFDest', imp))
@@ -55,81 +57,74 @@ def processar_xml(content, cnpj_auditado):
                 "UF_EMIT": buscar_tag('UF', emit),
                 "UF_DEST": buscar_tag('UF', dest),
                 "CFOP": buscar_tag('CFOP', prod),
-                "VAL-ICMS-ST": v_st + v_fcp_st, # CONSOLIDADO
-                "VAL-DIFAL": v_difal + v_fcp_dest, # CONSOLIDADO
-                "VAL-FCP-DEST": v_fcp_dest,
-                "VAL-FCP-ST": v_fcp_st,
+                "ST_TOTAL": v_st + v_fcp_st,      # SOMA SOLICITADA
+                "DIFAL_TOTAL": v_difal + v_fcp_dest, # SOMA SOLICITADA
                 "IE_SUBST": str(buscar_tag('IEST', icms) or "").strip()
             }
-            dados.append(linha)
-        return dados
+            dados_xml.append(linha)
+        return dados_xml
     except:
         return []
 
-# --- LÓGICA DE APURAÇÃO ---
-def gerar_apuracao(df, writer):
-    df_s = df[df['TIPO'] == "SAIDA"].copy()
-    df_e = df[df['TIPO'] == "ENTRADA"].copy()
+# --- INTERFACE DE UPLOAD ---
+cnpj_input = st.sidebar.text_input("CNPJ da Empresa (apenas números)")
+files = st.file_uploader("Upload de XMLs ou ZIP", accept_multiple_files=True)
 
-    def agrupar(df_temp, tipo):
-        col_uf = 'UF_DEST' if tipo == 'saida' else 'UF_AGRUPAR'
-        if tipo == 'entrada':
-            df_temp['UF_AGRUPAR'] = df_temp.apply(lambda x: x['UF_DEST'] if x['UF_EMIT'] == 'SP' else x['UF_EMIT'], axis=1)
-        
-        res = df_temp.groupby(col_uf).agg({
-            'VAL-ICMS-ST': 'sum', 'VAL-DIFAL': 'sum', 'VAL-FCP-DEST': 'sum', 'VAL-FCP-ST': 'sum'
-        }).reset_index().rename(columns={col_uf: 'UF'})
-        
-        ie_map = df_temp[df_temp['IE_SUBST'] != ""].groupby(col_uf)['IE_SUBST'].first().to_dict()
-        res['IE_SUBST'] = res['UF'].map(ie_map).fillna("")
-        return res
-
-    res_s = agrupar(df_s, 'saida')
-    res_e = agrupar(df_e, 'entrada')
-
-    # Unir para saldo
-    final = pd.DataFrame({'UF': UFS_BRASIL})
-    final = final.merge(res_s, on='UF', how='left', suffixes=('', '_S')).fillna(0)
-    final = final.merge(res_e, on='UF', how='left', suffixes=('_S', '_E')).fillna(0)
-
-    # Cálculo do Saldo Líquido
-    saldos = []
-    for i, row in final.iterrows():
-        tem_ie = str(row['IE_SUBST_S']).strip() != ""
-        # Se tem IE, subtrai. Se não tem, paga a Saída cheia.
-        st_liq = (row['VAL-ICMS-ST_S'] - row['VAL-ICMS-ST_E']) if tem_ie else row['VAL-ICMS-ST_S']
-        difal_liq = (row['VAL-DIFAL_S'] - row['VAL-DIFAL_E']) if tem_ie else row['VAL-DIFAL_S']
-        saldos.append({'UF': row['UF'], 'IE': row['IE_SUBST_S'], 'ST_LIQ': st_liq, 'DIFAL_LIQ': difal_liq})
-    
-    df_saldo = pd.DataFrame(saldos)
-
-    # Escrita no Excel
-    df_saldo.to_excel(writer, sheet_name="RESUMO_FINAL", index=False)
-    final.to_excel(writer, sheet_name="MEMORIA_CALCULO", index=False)
-
-# --- INTERFACE STREAMLIT ---
-st.title("🛡️ Sentinela: Validador de Apuração UF")
-cnpj_empresa = st.sidebar.text_input("CNPJ da Empresa Auditada")
-uploaded_files = st.file_uploader("Arraste seus XMLs ou ZIP aqui", accept_multiple_files=True)
-
-if uploaded_files and cnpj_empresa:
-    todos_dados = []
-    for f in uploaded_files:
+if files and cnpj_input:
+    lista_final = []
+    for f in files:
         if f.name.endswith('.xml'):
-            todos_dados.extend(processar_xml(f.read(), cnpj_empresa))
+            lista_final.extend(processar_xml(f.read(), cnpj_input))
         elif f.name.endswith('.zip'):
             with zipfile.ZipFile(f) as z:
                 for n in z.namelist():
-                    if n.endswith('.xml'):
-                        todos_dados.extend(processar_xml(z.open(n).read(), cnpj_empresa))
+                    if n.lower().endswith('.xml'):
+                        lista_final.extend(processar_xml(z.open(n).read(), cnpj_input))
     
-    if todos_dados:
-        df_total = pd.DataFrame(todos_dados)
-        st.success(f"Processadas {len(df_total)} linhas de XML.")
+    if lista_final:
+        df = pd.DataFrame(lista_final)
         
+        # --- APURAÇÃO POR UF ---
+        def preparar_resumo(df_base):
+            # Separa Saídas (5,6,7) e Entradas (1,2,3)
+            df_base['PREFIXO'] = df_base['CFOP'].astype(str).str[0]
+            s = df_base[df_base['TIPO'] == "SAIDA"].copy()
+            e = df_base[df_base['TIPO'] == "ENTRADA"].copy()
+            
+            # Agrupa Saídas por UF Destino
+            res_s = s.groupby('UF_DEST').agg({'ST_TOTAL':'sum', 'DIFAL_TOTAL':'sum'}).reset_index().rename(columns={'UF_DEST':'UF'})
+            ie_map = s[s['IE_SUBST'] != ""].groupby('UF_DEST')['IE_SUBST'].first().to_dict()
+            res_s['IE'] = res_s['UF'].map(ie_map).fillna("")
+
+            # Agrupa Entradas (Lógica: se Emitente é SP, olha Destino, senão olha Emitente)
+            e['UF_AGRUPAR'] = e.apply(lambda x: x['UF_DEST'] if x['UF_EMIT'] == 'SP' else x['UF_EMIT'], axis=1)
+            res_e = e.groupby('UF_AGRUPAR').agg({'ST_TOTAL':'sum', 'DIFAL_TOTAL':'sum'}).reset_index().rename(columns={'UF_AGRUPAR':'UF'})
+
+            # Merge Geral
+            final = pd.DataFrame({'UF': UFS_BRASIL})
+            final = final.merge(res_s, on='UF', how='left').fillna(0)
+            final = final.merge(res_e, on='UF', how='left', suffixes=('_S', '_E')).fillna(0)
+
+            # REGRA MESTRA: Saída - Entrada (Apenas se tiver IE)
+            saldos = []
+            for i, row in final.iterrows():
+                tem_ie = str(row['IE']).strip() != ""
+                st_liq = (row['ST_TOTAL_S'] - row['ST_TOTAL_E']) if tem_ie else row['ST_TOTAL_S']
+                difal_liq = (row['DIFAL_TOTAL_S'] - row['DIFAL_TOTAL_E']) if tem_ie else row['DIFAL_TOTAL_S']
+                saldos.append({'UF': row['UF'], 'IE_SUBST': row['IE'], 'ST_A_RECOLHER': st_liq, 'DIFAL_A_RECOLHER': difal_liq})
+            
+            return pd.DataFrame(saldos)
+
+        df_apuracao = preparar_resumo(df)
+        
+        # Exibição
+        st.subheader("📋 Resumo da Apuração por UF")
+        st.dataframe(df_apuracao, use_container_width=True)
+
+        # Download Excel
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            gerar_apuracao(df_total, writer)
+            df_apuracao.to_excel(writer, sheet_name='RESUMO_SALDO', index=False)
+            df.to_excel(writer, sheet_name='DETALHAMENTO_NOTAS', index=False)
         
-        st.download_button("💾 Baixar Apuração Consolidada", output.getvalue(), "Apuracao_UF.xlsx")
-        st.dataframe(df_total)
+        st.download_button("💾 Baixar Relatório Completo", output.getvalue(), "Analise_DIFAL_ST_FECP.xlsx")
