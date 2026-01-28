@@ -9,6 +9,7 @@ st.set_page_config(page_title="Auditoria DIFAL ST FECP - Sentinela", layout="wid
 
 UFS_BRASIL = ['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO']
 
+# LISTA DE CFOPs DE DEVOLUÇÃO (Abatem imposto no Bloco 2)
 CFOP_DEVOLUCAO = [
     '1201', '1202', '1203', '1204', '1410', '1411', '1660', '1661', '1662',
     '2201', '2202', '2203', '2204', '2410', '2411', '2660', '2661', '2662',
@@ -34,11 +35,10 @@ def processar_xml(content, cnpj_auditado, chaves_processadas, chaves_canceladas)
     try:
         xml_str = re.sub(r'\sxmlns(:\w+)?="[^"]+"', '', content.decode('utf-8', errors='ignore'))
         root = ET.fromstring(xml_str)
-        
         infNFe = root.find('.//infNFe')
         chave = infNFe.attrib.get('Id', '')[3:] if infNFe is not None else ""
         
-        # --- FILTRO ATUALIZADO ---
+        # --- FILTRO DE CANCELADAS E DUPLICADAS ---
         if not chave or chave in chaves_processadas or chave in chaves_canceladas:
             return []
         
@@ -48,22 +48,23 @@ def processar_xml(content, cnpj_auditado, chaves_processadas, chaves_canceladas)
         cnpj_alvo = re.sub(r'\D', '', cnpj_auditado)
         tp_nf = buscar_tag_recursiva('tpNF', ide)
 
-        if cnpj_emit == cnpj_alvo:
-            tipo = "SAIDA" if tp_nf == "1" else "ENTRADA"
-        else:
-            tipo = "ENTRADA"
-
-        iest_doc = buscar_tag_recursiva('IEST', emit) if tipo == "SAIDA" else buscar_tag_recursiva('IEST', dest)
-        uf_fiscal = buscar_tag_recursiva('UF', dest) if tipo == "SAIDA" else (buscar_tag_recursiva('UF', dest) if buscar_tag_recursiva('UF', emit) == 'SP' else buscar_tag_recursiva('UF', emit))
-        
         detalhes = []
         for det in root.findall('.//det'):
-            icms, imp, prod = det.find('.//ICMS'), det.find('.//imposto'), det.find('prod')
+            prod = det.find('prod')
             cfop = buscar_tag_recursiva('CFOP', prod)
-            
-            if tipo == "ENTRADA" and cfop not in CFOP_DEVOLUCAO:
-                continue
 
+            # --- LÓGICA DE FLUXO ---
+            if cnpj_emit == cnpj_alvo and tp_nf == "1":
+                tipo = "SAIDA"
+            elif cfop in CFOP_DEVOLUCAO:
+                tipo = "ENTRADA"
+            else:
+                continue 
+
+            icms, imp = det.find('.//ICMS'), det.find('.//imposto')
+            iest_doc = buscar_tag_recursiva('IEST', emit) if tipo == "SAIDA" else buscar_tag_recursiva('IEST', dest)
+            uf_fiscal = buscar_tag_recursiva('UF', dest) if tipo == "SAIDA" else (buscar_tag_recursiva('UF', dest) if buscar_tag_recursiva('UF', emit) == 'SP' else buscar_tag_recursiva('UF', emit))
+            
             detalhes.append({
                 "CHAVE": chave,
                 "NUM_NF": buscar_tag_recursiva('nNF', ide),
@@ -71,6 +72,7 @@ def processar_xml(content, cnpj_auditado, chaves_processadas, chaves_canceladas)
                 "UF_FISCAL": uf_fiscal,
                 "IEST_DOC": str(iest_doc).strip(),
                 "CFOP": cfop,
+                "VPROD": safe_float(buscar_tag_recursiva('vProd', prod)),
                 "ST": safe_float(buscar_tag_recursiva('vICMSST', icms)) + safe_float(buscar_tag_recursiva('vFCPST', icms)),
                 "DIFAL": safe_float(buscar_tag_recursiva('vICMSUFDest', imp)) + safe_float(buscar_tag_recursiva('vFCPUFDest', imp)),
                 "FCP": safe_float(buscar_tag_recursiva('vFCPUFDest', imp)),
@@ -98,23 +100,19 @@ if file_status:
         else:
             df_status = pd.read_excel(file_status, skiprows=2)
         
-        # Pega a coluna 10 (Chave) e 14 (Status)
+        # Coluna 10 (Chave) e 14 (Status)
         col_chave = df_status.columns[10]
         col_situacao = df_status.columns[14]
         
-        # FILTRO CORRIGIDO: Agora procura por "CANCEL" (pega Cancelada e Cancelamento)
-        mask_cancelada = df_status[col_situacao].astype(str).str.upper().str.contains("CANCEL", na=False)
-        canceladas = df_status[mask_cancelada]
-        
+        # FILTRO ROBUSTO: Procura qualquer variação de "CANCEL"
+        mask_cancel = df_status[col_situacao].astype(str).str.upper().str.contains("CANCEL", na=False)
+        canceladas = df_status[mask_cancel]
         chaves_canceladas = set(canceladas[col_chave].astype(str).str.replace('NFe', '').str.strip())
         
         if len(chaves_canceladas) > 0:
-            st.sidebar.warning(f"🚫 {len(chaves_canceladas)} notas CANCELADAS identificadas.")
-        else:
-            st.sidebar.info("✅ Nenhuma nota cancelada encontrada no relatório.")
-            
+            st.sidebar.warning(f"🚫 {len(chaves_canceladas)} notas canceladas detectadas.")
     except Exception as e:
-        st.sidebar.error(f"Erro ao ler relatório SIEG: {e}")
+        st.sidebar.error(f"Erro no arquivo SIEG: {e}")
 
 if uploaded_files and cnpj_empresa:
     dados_totais, chaves_unicas = [], set()
@@ -129,6 +127,8 @@ if uploaded_files and cnpj_empresa:
     
     if dados_totais:
         df_listagem = pd.DataFrame(dados_totais)
+        st.success(f"✅ {len(chaves_unicas)} XMLs processados. Notas canceladas ignoradas.")
+
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df_listagem.to_excel(writer, sheet_name='LISTAGEM_XML', index=False)
@@ -155,23 +155,25 @@ if uploaded_files and cnpj_empresa:
             for r, uf in enumerate(UFS_BRASIL):
                 row = r + 2 
                 ws.write(row, 0, uf, fmt_uf)
-                ws.write_formula(row, 1, f'=IFERROR(INDEX(LISTAGEM_XML!E:E, MATCH("{uf}", LISTAGEM_XML!D:D, 0)), "")', fmt_uf)
+                # O TRUQUE: Adicionei & "" na fórmula para o Excel não retornar 0 quando a célula estiver vazia
+                ws.write_formula(row, 1, f'=IFERROR(INDEX(LISTAGEM_XML!E:E, MATCH("{uf}", LISTAGEM_XML!D:D, 0)) & "", "")', fmt_uf)
+                
                 for i, col_let in enumerate(['H', 'I', 'J', 'K']): 
                     ws.write_formula(row, i+2, f'=SUMIFS(LISTAGEM_XML!{col_let}:{col_let}, LISTAGEM_XML!D:D, "{uf}", LISTAGEM_XML!C:C, "SAIDA")', fmt_num)
                     ws.write_formula(row, i+9, f'=SUMIFS(LISTAGEM_XML!{col_let}:{col_let}, LISTAGEM_XML!D:D, "{uf}", LISTAGEM_XML!C:C, "ENTRADA")', fmt_num)
                     col_s, col_e = chr(65 + i + 2), chr(65 + i + 9)
                     ws.write_formula(row, i+16, f'=IF(B{row+1}<>"", {col_s}{row+1}-{col_e}{row+1}, {col_s}{row+1})', fmt_num)
+                
                 ws.write(row, 14, uf, fmt_uf); ws.write_formula(row, 15, f'=B{row+1}', fmt_uf)
 
-            ws.conditional_format(f'A3:F{len(UFS_BRASIL)+2}', {'type':'formula', 'criteria':'=$B3<>""', 'format':fmt_orange_uf})
-            ws.conditional_format(f'O3:T{len(UFS_BRASIL)+2}', {'type':'formula', 'criteria':'=$P3<>""', 'format':fmt_orange_uf})
+            # CRITÉRIO SEGURO: Só pinta se o tamanho do texto for maior que 0
+            ws.conditional_format(f'A3:F{len(UFS_BRASIL)+2}', {'type':'formula', 'criteria':'=LEN($B3)>0', 'format':fmt_orange_uf})
+            ws.conditional_format(f'O3:T{len(UFS_BRASIL)+2}', {'type':'formula', 'criteria':'=LEN($P3)>0', 'format':fmt_orange_uf})
 
-            # Totais
             total_row = len(UFS_BRASIL) + 2
             ws.write(total_row, 0, "TOTAL GERAL", fmt_total)
             for c in [2,3,4,5, 9,10,11,12, 16,17,18,19]:
                 col_let = chr(65 + c) if c < 26 else f"A{chr(65 + c - 26)}"
                 ws.write_formula(total_row, c, f'=SUM({col_let}3:{col_let}{total_row})', fmt_total)
 
-        st.success(f"✅ Processado! {len(chaves_unicas)} notas analisadas.")
-        st.download_button("💾 BAIXAR AUDITORIA", output.getvalue(), "Auditoria_SIEG_Final.xlsx")
+        st.download_button("💾 BAIXAR AUDITORIA CORRIGIDA", output.getvalue(), "Auditoria_SIEG_Final.xlsx")
