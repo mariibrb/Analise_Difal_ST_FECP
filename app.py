@@ -9,6 +9,13 @@ st.set_page_config(page_title="Auditoria DIFAL ST FECP - Sentinela", layout="wid
 
 UFS_BRASIL = ['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO']
 
+# LISTA DE CFOPs DE DEVOLUÇÃO (Somente estes abatem imposto no Bloco 2)
+CFOP_DEVOLUCAO = [
+    '1201', '1202', '1203', '1204', '1410', '1411', '1660', '1661', '1662',
+    '2201', '2202', '2203', '2204', '2410', '2411', '2660', '2661', '2662',
+    '3201', '3202', '3411'
+]
+
 def safe_float(v):
     if v is None: return 0.0
     try:
@@ -45,23 +52,28 @@ def processar_xml(content, cnpj_auditado, chaves_processadas):
         cnpj_alvo = re.sub(r'\D', '', cnpj_auditado)
         tp_nf = buscar_tag_recursiva('tpNF', ide)
 
-        # --- LÓGICA DE FLUXO (SAÍDA / ENTRADA / DEVOLUÇÃO) ---
-        if cnpj_emit == cnpj_alvo:
-            tipo = "SAIDA" if tp_nf == "1" else "ENTRADA"
-        elif cnpj_dest == cnpj_alvo:
-            tipo = "ENTRADA"
-        else:
-            return []
-
-        iest_doc = buscar_tag_recursiva('IEST', emit) if tipo == "SAIDA" else buscar_tag_recursiva('IEST', dest)
-        # UF que sofre o impacto do imposto
-        uf_fiscal = buscar_tag_recursiva('UF', dest) if tipo == "SAIDA" else (buscar_tag_recursiva('UF', dest) if buscar_tag_recursiva('UF', emit) == 'SP' else buscar_tag_recursiva('UF', emit))
-        
         detalhes = []
         for det in root.findall('.//det'):
+            prod = det.find('prod')
+            cfop = buscar_tag_recursiva('CFOP', prod)
+
+            # --- LÓGICA DE FLUXO REFINADA (ENTRADA SÓ SE FOR DEVOLUÇÃO) ---
+            if cnpj_emit == cnpj_alvo and tp_nf == "1":
+                tipo = "SAIDA"
+            elif cfop in CFOP_DEVOLUCAO:
+                tipo = "ENTRADA"
+            else:
+                continue # Pula compras e outras entradas que não abatem imposto
+            # -------------------------------------------------------------
+
             icms = det.find('.//ICMS')
             imp = det.find('.//imposto')
-            prod = det.find('prod')
+            
+            # Captura IEST do cabeçalho conforme seu XML
+            iest_doc = buscar_tag_recursiva('IEST', emit) if tipo == "SAIDA" else buscar_tag_recursiva('IEST', dest)
+            
+            # UF Fiscal de impacto
+            uf_fiscal = buscar_tag_recursiva('UF', dest) if tipo == "SAIDA" else (buscar_tag_recursiva('UF', dest) if buscar_tag_recursiva('UF', emit) == 'SP' else buscar_tag_recursiva('UF', emit))
             
             detalhes.append({
                 "CHAVE": chave,
@@ -69,7 +81,7 @@ def processar_xml(content, cnpj_auditado, chaves_processadas):
                 "TIPO": tipo,
                 "UF_FISCAL": uf_fiscal,
                 "IEST_DOC": str(iest_doc).strip(),
-                "CFOP": buscar_tag_recursiva('CFOP', prod),
+                "CFOP": cfop,
                 "VPROD": safe_float(buscar_tag_recursiva('vProd', prod)),
                 "ST": safe_float(buscar_tag_recursiva('vICMSST', icms)) + safe_float(buscar_tag_recursiva('vFCPST', icms)),
                 "DIFAL": safe_float(buscar_tag_recursiva('vICMSUFDest', imp)) + safe_float(buscar_tag_recursiva('vFCPUFDest', imp)),
@@ -107,7 +119,7 @@ if uploaded_files and cnpj_empresa:
             # 1. ESCREVE ABA DE DETALHAMENTO (A BASE DE TUDO)
             df_listagem.to_excel(writer, sheet_name='LISTAGEM_XML', index=False)
             ws_l = writer.sheets['LISTAGEM_XML']
-            ws_l.set_column('A:A', 50) # Coluna da chave larga
+            ws_l.set_column('A:A', 50) 
             
             # 2. CONSTRÓI ABA DE RESUMO DINÂMICO
             workbook = writer.book
@@ -122,7 +134,7 @@ if uploaded_files and cnpj_empresa:
             fmt_orange = workbook.add_format({'bg_color': '#FFDAB9', 'border': 1, 'num_format': '#,##0.00'})
 
             ws.merge_range('A1:F1', '1. SAÍDAS', fmt_tit)
-            ws.merge_range('H1:M1', '2. ENTRADAS', fmt_tit)
+            ws.merge_range('H1:M1', '2. ENTRADAS (DEV)', fmt_tit)
             ws.merge_range('O1:T1', '3. SALDO', fmt_tit)
 
             heads = ['UF', 'IEST', 'ST TOTAL', 'DIFAL TOTAL', 'FCP TOTAL', 'FCPST TOTAL']
@@ -131,24 +143,18 @@ if uploaded_files and cnpj_empresa:
                 ws.write(1, i + 7, h, fmt_head)
                 ws.write(1, i + 14, h, fmt_head)
 
-            # MAPA DE COLUNAS DA ABA 'LISTAGEM_XML':
-            # A=CHAVE, B=NUM_NF, C=TIPO, D=UF_FISCAL, E=IEST_DOC, F=CFOP, G=VPROD, H=ST, I=DIFAL, J=FCP, K=FCPST
             for r, uf in enumerate(UFS_BRASIL):
                 row = r + 2 # Linha 3 do Excel
                 
-                # UF e Busca da IEST
                 ws.write(row, 0, uf, fmt_uf)
-                # Procura a IEST na coluna E da listagem onde a UF (col D) bate
                 ws.write_formula(row, 1, f'=IFERROR(INDEX(LISTAGEM_XML!E:E, MATCH("{uf}", LISTAGEM_XML!D:D, 0)), "")', fmt_uf)
 
-                # SAÍDAS, ENTRADAS E SALDO COM FÓRMULAS
-                for i, col_let in enumerate(['H', 'I', 'J', 'K']): # Colunas de valores na listagem
+                for i, col_let in enumerate(['H', 'I', 'J', 'K']): 
                     # Saída: Soma se UF=uf e TIPO=SAIDA
                     ws.write_formula(row, i+2, f'=SUMIFS(LISTAGEM_XML!{col_let}:{col_let}, LISTAGEM_XML!D:D, "{uf}", LISTAGEM_XML!C:C, "SAIDA")', fmt_num)
                     # Entrada: Soma se UF=uf e TIPO=ENTRADA
                     ws.write_formula(row, i+9, f'=SUMIFS(LISTAGEM_XML!{col_let}:{col_let}, LISTAGEM_XML!D:D, "{uf}", LISTAGEM_XML!C:C, "ENTRADA")', fmt_num)
                     
-                    # Saldo: (Saída - Entrada) se tiver IEST (Coluna B do resumo), senão apenas Saída
                     col_s = chr(65 + i + 2)
                     col_e = chr(65 + i + 9)
                     ws.write_formula(row, i+16, f'=IF(B{row+1}<>"", {col_s}{row+1}-{col_e}{row+1}, {col_s}{row+1})', fmt_num)
