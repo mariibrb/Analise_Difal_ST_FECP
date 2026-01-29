@@ -5,10 +5,11 @@ import re
 import io
 import zipfile
 
-st.set_page_config(page_title="Auditoria DIFAL ST FECP - Sentinela", layout="wide")
+st.set_page_config(page_title="Sentinela - Auditoria Especial RJ", layout="wide")
 
 UFS_BRASIL = ['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO']
 
+# CFOPs de Devolução (Abatimento no Bloco 2)
 CFOP_DEVOLUCAO = [
     '1201', '1202', '1203', '1204', '1410', '1411', '1660', '1661', '1662',
     '2201', '2202', '2203', '2204', '2410', '2411', '2660', '2661', '2662',
@@ -37,6 +38,7 @@ def processar_xml(content, cnpj_auditado, chaves_processadas, chaves_canceladas)
         infNFe = root.find('.//infNFe')
         chave = infNFe.attrib.get('Id', '')[3:] if infNFe is not None else ""
         
+        # Filtro de Canceladas e Duplicadas
         if not chave or chave in chaves_processadas or chave in chaves_canceladas:
             return []
         
@@ -46,22 +48,23 @@ def processar_xml(content, cnpj_auditado, chaves_processadas, chaves_canceladas)
         cnpj_alvo = re.sub(r'\D', '', cnpj_auditado)
         tp_nf = buscar_tag_recursiva('tpNF', ide)
 
+        if cnpj_emit == cnpj_alvo:
+            tipo = "SAIDA" if tp_nf == "1" else "ENTRADA"
+        else:
+            tipo = "ENTRADA"
+
+        iest_doc = buscar_tag_recursiva('IEST', emit) if tipo == "SAIDA" else buscar_tag_recursiva('IEST', dest)
+        uf_fiscal = buscar_tag_recursiva('UF', dest) if tipo == "SAIDA" else (buscar_tag_recursiva('UF', dest) if buscar_tag_recursiva('UF', emit) == 'SP' else buscar_tag_recursiva('UF', emit))
+        
         detalhes = []
         for det in root.findall('.//det'):
-            prod = det.find('prod')
+            icms, imp, prod = det.find('.//ICMS'), det.find('.//imposto'), det.find('prod')
             cfop = buscar_tag_recursiva('CFOP', prod)
-
-            if cnpj_emit == cnpj_alvo and tp_nf == "1":
-                tipo = "SAIDA"
-            elif cfop in CFOP_DEVOLUCAO:
-                tipo = "ENTRADA"
-            else:
-                continue 
-
-            icms, imp = det.find('.//ICMS'), det.find('.//imposto')
-            iest_doc = buscar_tag_recursiva('IEST', emit) if tipo == "SAIDA" else buscar_tag_recursiva('IEST', dest)
-            uf_fiscal = buscar_tag_recursiva('UF', dest) if tipo == "SAIDA" else (buscar_tag_recursiva('UF', dest) if buscar_tag_recursiva('UF', emit) == 'SP' else buscar_tag_recursiva('UF', emit))
             
+            # Filtro contábil de devolução
+            if tipo == "ENTRADA" and cfop not in CFOP_DEVOLUCAO:
+                continue
+
             detalhes.append({
                 "CHAVE": chave,
                 "NUM_NF": buscar_tag_recursiva('nNF', ide),
@@ -78,11 +81,12 @@ def processar_xml(content, cnpj_auditado, chaves_processadas, chaves_canceladas)
         return detalhes
     except: return []
 
-st.title("🛡️ Sentinela: Auditoria com Regra RJ")
+# --- INTERFACE ---
+st.title("🛡️ Sentinela: Auditoria Especial RJ (Regra Domínio)")
 
 st.sidebar.subheader("1. Lista de Status (SIEG)")
-file_status = st.sidebar.file_uploader("Suba o relatório CSV/XLSX da SIEG", type=['csv', 'xlsx'])
-cnpj_empresa = st.sidebar.text_input("CNPJ Auditado (apenas números)")
+file_status = st.sidebar.file_uploader("Suba o relatório SIEG", type=['csv', 'xlsx'])
+cnpj_empresa = st.sidebar.text_input("CNPJ Auditado")
 uploaded_files = st.file_uploader("Suba seus XMLs ou ZIP", accept_multiple_files=True)
 
 chaves_canceladas = set()
@@ -95,12 +99,10 @@ if file_status:
             df_status = pd.read_excel(file_status, skiprows=2)
         col_chave, col_situacao = df_status.columns[10], df_status.columns[14]
         mask_cancel = df_status[col_situacao].astype(str).str.upper().str.contains("CANCEL", na=False)
-        canceladas = df_status[mask_cancel]
-        chaves_canceladas = set(canceladas[col_chave].astype(str).str.replace('NFe', '').str.strip())
+        chaves_canceladas = set(df_status[mask_cancel][col_chave].astype(str).str.replace('NFe', '').str.strip())
         if len(chaves_canceladas) > 0:
             st.sidebar.warning(f"🚫 {len(chaves_canceladas)} notas canceladas detectadas.")
-    except Exception as e:
-        st.sidebar.error(f"Erro no arquivo SIEG: {e}")
+    except: pass
 
 if uploaded_files and cnpj_empresa:
     dados_totais, chaves_unicas = [], set()
@@ -114,12 +116,10 @@ if uploaded_files and cnpj_empresa:
                         dados_totais.extend(processar_xml(z.open(n).read(), cnpj_empresa, chaves_unicas, chaves_canceladas))
     
     if dados_totais:
-        df_listagem = pd.DataFrame(dados_totais)
-        st.success(f"✅ {len(chaves_unicas)} XMLs processados.")
-
+        df_base = pd.DataFrame(dados_totais)
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df_listagem.to_excel(writer, sheet_name='LISTAGEM_XML', index=False)
+            df_base.to_excel(writer, sheet_name='LISTAGEM_XML', index=False)
             ws_l = writer.sheets['LISTAGEM_XML']
             ws_l.set_column('A:A', 50)
             
@@ -150,16 +150,12 @@ if uploaded_files and cnpj_empresa:
                     
                     col_s, col_e = chr(65 + i + 2), chr(65 + i + 9)
                     
-                    # --- AJUSTE FINO RJ (Coluna R é a i=1 no loop de Saldo) ---
-                    if i == 1: # Coluna DIFAL
-                        # Se UF for RJ, faz (Saída - Entrada - FCP Saída). Se não, (Saída - Entrada)
-                        # Onde S_DIFAL é col_s, E_DIFAL é col_e, S_FCP é a coluna J da listagem (col_s do loop i=2)
-                        # No resumo: DIFAL_TOTAL_S é col_s, FCP_TOTAL_S é Coluna E do resumo (índice 4)
-                        formula_saldo = f'=IF(B{row+1}<>"", IF(A{row+1}="RJ", {col_s}{row+1}-{col_e}{row+1}-E{row+1}, {col_s}{row+1}-{col_e}{row+1}), {col_s}{row+1})'
+                    # --- AJUSTE DINÂMICO RJ (SOMENTE NA COLUNA R / i=1) ---
+                    if i == 1: # DIFAL
+                        # Se UF for RJ, abate FECP (E e L são as colunas de FCP)
+                        ws.write_formula(row, i+16, f'=IF(B{row+1}<>"", IF(A{row+1}="RJ", ({col_s}{row+1}-{col_e}{row+1})-(E{row+1}-L{row+1}), {col_s}{row+1}-{col_e}{row+1}), IF(A{row+1}="RJ", {col_s}{row+1}-E{row+1}, {col_s}{row+1}))', fmt_num)
                     else:
-                        formula_saldo = f'=IF(B{row+1}<>"", {col_s}{row+1}-{col_e}{row+1}, {col_s}{row+1})'
-                    
-                    ws.write_formula(row, i+16, formula_saldo, fmt_num)
+                        ws.write_formula(row, i+16, f'=IF(B{row+1}<>"", {col_s}{row+1}-{col_e}{row+1}, {col_s}{row+1})', fmt_num)
                 
                 ws.write(row, 14, uf, fmt_uf); ws.write_formula(row, 15, f'=B{row+1}', fmt_uf)
 
@@ -172,4 +168,5 @@ if uploaded_files and cnpj_empresa:
                 col_let = chr(65 + c) if c < 26 else f"A{chr(65 + c - 26)}"
                 ws.write_formula(total_row, c, f'=SUM({col_let}3:{col_let}{total_row})', fmt_total)
 
-        st.download_button("💾 BAIXAR AUDITORIA COM REGRA RJ", output.getvalue(), "Auditoria_SIEG_RJ.xlsx")
+        st.success("✅ Auditoria finalizada com a regra do RJ e filtro SIEG!")
+        st.download_button("💾 BAIXAR EXCEL DOMÍNIO", output.getvalue(), "Auditoria_SIEG_RJ.xlsx")
