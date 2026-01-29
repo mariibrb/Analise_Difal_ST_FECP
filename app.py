@@ -4,30 +4,26 @@ import xml.etree.ElementTree as ET
 import re
 import io
 import zipfile
-import random
 
-# --- CONFIGURAÇÃO E ESTILO (DESIGN UNIFICADO E TRAVADO) ---
+# --- CONFIGURAÇÃO DE APARÊNCIA (ALTERE A COR AQUI) ---
+COR_ROSA_CLARINHO = '#FFEBFA' 
+
 st.set_page_config(page_title="DIAMOND TAX | Premium Audit", layout="wide", page_icon="💎")
 
 def aplicar_estilo_rihanna_original():
     st.markdown("""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;800&family=Plus+Jakarta+Sans:wght@400;700&display=swap');
-
         header, [data-testid="stHeader"] { display: none !important; }
         .stApp { 
             background: radial-gradient(circle at top right, #FFDEEF 0%, #F8F9FA 100%) !important; 
         }
-
         [data-testid="stSidebar"] {
             background-color: #FFFFFF !important;
             border-right: 1px solid #FFDEEF !important;
             min-width: 400px !important;
             max-width: 400px !important;
         }
-
-        [data-testid="stSidebar"] div.stButton > button { width: 100% !important; }
-
         div.stButton > button {
             color: #6C757D !important; 
             background-color: #FFFFFF !important; 
@@ -38,22 +34,20 @@ def aplicar_estilo_rihanna_original():
             height: 60px !important;
             text-transform: uppercase;
             transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
+            width: 100% !important;
         }
-
         div.stButton > button:hover {
             transform: translateY(-5px) !important;
             box-shadow: 0 10px 20px rgba(255,105,180,0.2) !important;
             border-color: #FF69B4 !important;
             color: #FF69B4 !important;
         }
-
         [data-testid="stFileUploader"] { 
             border: 2px dashed #FF69B4 !important; 
             border-radius: 20px !important;
             background: #FFFFFF !important;
             padding: 20px !important;
         }
-
         div.stDownloadButton > button {
             background-color: #FF69B4 !important; 
             color: white !important; 
@@ -64,14 +58,12 @@ def aplicar_estilo_rihanna_original():
             text-transform: uppercase;
             width: 100% !important;
         }
-
         h1, h2, h3 {
             font-family: 'Montserrat', sans-serif;
             font-weight: 800;
             color: #FF69B4 !important;
             text-align: center;
         }
-
         .stTextInput>div>div>input {
             border: 2px solid #FFDEEF !important;
             border-radius: 10px !important;
@@ -129,7 +121,6 @@ def processar_xml(content, cnpj_auditado, chaves_processadas, chaves_canceladas)
 
 # --- INTERFACE ---
 st.markdown("<h1>💎 DIAMOND TAX</h1>", unsafe_allow_html=True)
-
 if 'confirmado' not in st.session_state: st.session_state['confirmado'] = False
 
 with st.sidebar:
@@ -140,9 +131,7 @@ with st.sidebar:
     if len(cnpj_limpo) == 14:
         if st.button("✅ LIBERAR OPERAÇÃO"): st.session_state['confirmado'] = True
     st.divider()
-    if st.button("🗑️ RESETAR SISTEMA"):
-        st.session_state.clear()
-        st.rerun()
+    if st.button("🗑️ RESETAR SISTEMA"): st.session_state.clear(); st.rerun()
 
 if st.session_state['confirmado']:
     st.info(f"🏢 Empresa: {cnpj_limpo}")
@@ -173,21 +162,19 @@ if st.session_state['confirmado']:
         
         if dados_totais:
             output = io.BytesIO()
-            df_listagem = pd.DataFrame(dados_totais)
-            
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df_listagem.to_excel(writer, sheet_name='LISTAGEM_XML', index=False)
-                
+                pd.DataFrame(dados_totais).to_excel(writer, sheet_name='LISTAGEM_XML', index=False)
                 workbook = writer.book
                 ws = workbook.add_worksheet('DIFAL_ST_FECP')
-                
-                # FORMATOS
+                ws.hide_gridlines(2) # SEM LINHAS DE GRADE
+
+                # FORMATOS COM BORDAS
                 f_tit = workbook.add_format({'bold':True, 'bg_color':'#FF69B4', 'font_color':'#FFFFFF', 'border':1, 'align':'center'})
                 f_head = workbook.add_format({'bold':True, 'bg_color':'#F8F9FA', 'font_color':'#6C757D', 'border':1, 'align':'center'})
                 f_num = workbook.add_format({'num_format':'#,##0.00', 'border':1})
-                f_pink_light = workbook.add_format({'bg_color': '#FFB6C1', 'border': 1, 'align':'center'}) # ROSA BEM CLARINHO
+                f_uf = workbook.add_format({'border':1, 'align':'center'})
+                f_pink_light = workbook.add_format({'bg_color': COR_ROSA_CLARINHO, 'border': 1})
 
-                # CABEÇALHOS DAS SEÇÕES
                 ws.merge_range('A1:F1', '1. SAÍDAS', f_tit)
                 ws.merge_range('H1:M1', '2. ENTRADAS (DEV)', f_tit)
                 ws.merge_range('O1:T1', '3. SALDO', f_tit)
@@ -198,41 +185,28 @@ if st.session_state['confirmado']:
                     ws.write(1, i + 7, h, f_head)
                     ws.write(1, i + 14, h, f_head)
 
-                # LÓGICA DE FÓRMULAS POR UF
                 for r, uf in enumerate(UFS_BRASIL):
                     row = r + 2
-                    ws.write(row, 0, uf)
+                    ws.write(row, 0, uf, f_uf)   # UF Saída
+                    ws.write(row, 7, uf, f_uf)   # UF Entrada (Restaurado)
+                    ws.write(row, 14, uf, f_uf)  # UF Saldo
                     
-                    # IEST Automático (Procura a IEST na listagem para essa UF)
-                    ws.write_formula(row, 1, f'=IFERROR(INDEX(LISTAGEM_XML!E:E, MATCH("{uf}", LISTAGEM_XML!D:D, 0)) & "", "")')
-                    
-                    # Colunas da Listagem: ST(G), DIFAL(H), FCP(I), FCPST(J)
-                    mapa_cols = {'ST':'G', 'DIFAL':'H', 'FCP':'I', 'FCPST':'J'}
-                    
-                    for i, (label, col_let) in enumerate(mapa_cols.items()):
-                        # Somas Saídas
-                        ws.write_formula(row, i+2, f'=SUMIFS(LISTAGEM_XML!{col_let}:{col_let}, LISTAGEM_XML!D:D, "{uf}", LISTAGEM_XML!C:C, "SAIDA")', f_num)
-                        # Somas Entradas
-                        ws.write_formula(row, i+9, f'=SUMIFS(LISTAGEM_XML!{col_let}:{col_let}, LISTAGEM_XML!D:D, "{uf}", LISTAGEM_XML!C:C, "ENTRADA")', f_num)
-                        
-                        # Cálculo de Saldo (Coluna O em diante)
-                        col_s = chr(65 + i + 2) # C, D, E, F
-                        col_e = chr(65 + i + 9) # J, K, L, M
-                        
-                        # Regra Rio de Janeiro no Saldo de DIFAL (DIFAL - FCP)
-                        if label == 'DIFAL':
-                            formula_saldo = f'=IF(B{row+1}<>"", IF(A{row+1}="RJ", ({col_s}{row+1}-{col_e}{row+1})-(E{row+1}-L{row+1}), {col_s}{row+1}-{col_e}{row+1}), {col_s}{row+1})'
-                        else:
-                            formula_saldo = f'=IF(B{row+1}<>"", {col_s}{row+1}-{col_e}{row+1}, {col_s}{row+1})'
-                            
-                        ws.write_formula(row, i+16, formula_saldo, f_num)
-                    
-                    # Espelhamento de UF e IEST no Saldo
-                    ws.write(row, 14, uf)
-                    ws.write_formula(row, 15, f'=B{row+1}')
+                    ws.write_formula(row, 1, f'=IFERROR(INDEX(LISTAGEM_XML!E:E, MATCH("{uf}", LISTAGEM_XML!D:D, 0)) & "", "")', f_uf)
+                    ws.write_formula(row, 8, f'=B{row+1}', f_uf)
+                    ws.write_formula(row, 15, f'=B{row+1}', f_uf)
 
-                # FORMATAÇÃO CONDICIONAL (ROSA CLARINHO SE TIVER IEST)
+                    for i, col_let in enumerate(['G', 'H', 'I', 'J']): 
+                        ws.write_formula(row, i+2, f'=SUMIFS(LISTAGEM_XML!{col_let}:{col_let}, LISTAGEM_XML!D:D, "{uf}", LISTAGEM_XML!C:C, "SAIDA")', f_num)
+                        ws.write_formula(row, i+9, f'=SUMIFS(LISTAGEM_XML!{col_let}:{col_let}, LISTAGEM_XML!D:D, "{uf}", LISTAGEM_XML!C:C, "ENTRADA")', f_num)
+                        col_s, col_e = chr(65 + i + 2), chr(65 + i + 9)
+                        if i == 1: # Regra RJ
+                            f_sal = f'=IF(B{row+1}<>"", IF(A{row+1}="RJ", ({col_s}{row+1}-{col_e}{row+1})-(E{row+1}-L{row+1}), {col_s}{row+1}-{col_e}{row+1}), {col_s}{row+1})'
+                        else:
+                            f_sal = f'=IF(B{row+1}<>"", {col_s}{row+1}-{col_e}{row+1}, {col_s}{row+1})'
+                        ws.write_formula(row, i+16, f_sal, f_num)
+
                 ws.conditional_format('A3:F29', {'type':'formula', 'criteria':'=LEN($B3)>0', 'format':f_pink_light})
+                ws.conditional_format('H3:M29', {'type':'formula', 'criteria':'=LEN($I3)>0', 'format':f_pink_light})
                 ws.conditional_format('O3:T29', {'type':'formula', 'criteria':'=LEN($P3)>0', 'format':f_pink_light})
 
             st.success("💎 Apuração Concluída!")
