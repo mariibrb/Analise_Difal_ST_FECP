@@ -150,7 +150,7 @@ with st.container():
         <div class="instrucoes-card">
             <h3>📖 Passo a Passo</h3>
             <ol>
-                <li><b>Relatório SIEG:</b> Suba o arquivo CSV ou XLSX de Status para filtrar notas canceladas.</li>
+                <li><b>Relatório SIEG:</b> Suba os arquivos CSV ou XLSX de Status para filtrar notas canceladas (pode ser mais de um).</li>
                 <li><b>Arquivos XML:</b> Arraste seus arquivos XML ou pastas ZIP para a área de upload.</li>
                 <li><b>Processamento:</b> Clique no botão <b>"INICIAR APURAÇÃO DIAMANTE"</b>.</li>
                 <li><b>Download:</b> Baixe o Excel final com as abas de listagem e resumo por estado.</li>
@@ -188,42 +188,48 @@ with st.sidebar:
 
 if st.session_state['confirmado']:
     st.info(f"🏢 Empresa: {cnpj_limpo}")
-    file_status = st.file_uploader("1. Suba o relatório de STATUS (SIEG)", type=['csv', 'xlsx'])
+    # ALTERADO: accept_multiple_files=True para permitir vários relatórios de status
+    files_status = st.file_uploader("1. Suba os relatórios de STATUS (SIEG)", type=['csv', 'xlsx'], accept_multiple_files=True)
     uploaded_files = st.file_uploader("2. Arraste seus XMLs ou ZIP aqui:", accept_multiple_files=True)
     
     chaves_canceladas = set()
-    if file_status:
-        try:
-            # CORREÇÃO: Lógica ajustada para o formato do CSV do usuário
-            # O cabeçalho real está na linha 3 (índice 2)
-            if file_status.name.endswith('.csv'):
-                # Lê pulando as primeiras linhas de metadados
-                df_status = pd.read_csv(file_status, header=2, sep=',', encoding='utf-8', on_bad_lines='skip')
-            else:
-                df_status = pd.read_excel(file_status, header=2)
-            
-            # Normalizar nomes das colunas para evitar erros de case/espaço
-            df_status.columns = df_status.columns.str.strip().str.upper()
+    
+    # Processamento de Múltiplos Arquivos de Status
+    if files_status:
+        for f_status in files_status:
+            try:
+                # O cabeçalho real está na linha 3 (índice 2)
+                if f_status.name.endswith('.csv'):
+                    # Lê pulando as primeiras linhas de metadados
+                    df_status = pd.read_csv(f_status, header=2, sep=',', encoding='utf-8', on_bad_lines='skip')
+                else:
+                    df_status = pd.read_excel(f_status, header=2)
+                
+                # Normalizar nomes das colunas para evitar erros de case/espaço
+                df_status.columns = df_status.columns.str.strip().str.upper()
 
-            # Tenta localizar as colunas pelo nome, é mais seguro que pelo índice fixo
-            # Procura coluna que contenha "STATUS" e coluna que contenha "CHAVE"
-            col_status = next((c for c in df_status.columns if 'STATUS' in c), None)
-            col_chave = next((c for c in df_status.columns if 'CHAVE' in c), None)
+                # Tenta localizar as colunas pelo nome
+                col_status = next((c for c in df_status.columns if 'STATUS' in c), None)
+                col_chave = next((c for c in df_status.columns if 'CHAVE' in c), None)
 
-            if col_status and col_chave:
-                mask = df_status[col_status].astype(str).str.upper().str.contains("CANCEL", na=False)
-                # Extrai as chaves, garantindo que só fiquem números
-                chaves_canceladas = set(
-                    df_status.loc[mask, col_chave]
-                    .astype(str)
-                    .str.replace(r'\D', '', regex=True) # Remove NFe, espaços, letras
-                    .str.strip()
-                )
-            else:
-                st.warning("⚠️ Aviso: Colunas de 'Chave' ou 'Status' não identificadas automaticamente no relatório SIEG. Verifique o arquivo.")
+                if col_status and col_chave:
+                    mask = df_status[col_status].astype(str).str.upper().str.contains("CANCEL", na=False)
+                    # Extrai as chaves deste arquivo e adiciona ao conjunto total
+                    novas_chaves = set(
+                        df_status.loc[mask, col_chave]
+                        .astype(str)
+                        .str.replace(r'\D', '', regex=True) # Remove NFe, espaços, letras
+                        .str.strip()
+                    )
+                    chaves_canceladas.update(novas_chaves)
+                else:
+                    st.warning(f"⚠️ Aviso: Colunas de 'Chave' ou 'Status' não identificadas no arquivo {f_status.name}.")
 
-        except Exception as e: 
-            st.error(f"Erro no relatório SIEG: {e}")
+            except Exception as e: 
+                st.error(f"Erro no relatório {f_status.name}: {e}")
+        
+        if chaves_canceladas:
+            st.success(f"✅ {len(chaves_canceladas)} notas canceladas identificadas nos relatórios.")
 
     if uploaded_files and st.button("🚀 INICIAR APURAÇÃO DIAMANTE"):
         dados_totais, chaves_unicas = [], set()
