@@ -7,7 +7,7 @@ import zipfile
 import random
 
 # --- CONFIGURAÇÃO E ESTILO (DESIGN UNIFICADO E TRAVADO) ---
-st.set_page_config(page_title="DIAMOND TAX | Premium Audit", layout="wide", page_icon="💎")
+st.set_page_config(page_title="MERCADOR", layout="wide", page_icon="💎")
 
 # --- CONFIGURAÇÃO DE APARÊNCIA (COR ROSA ESPECIFICADA) ---
 COR_ROSA_CLARINHO = '#FFEBFA' 
