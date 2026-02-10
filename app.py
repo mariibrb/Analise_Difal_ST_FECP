@@ -140,7 +140,7 @@ def processar_xml(content, cnpj_auditado, chaves_processadas, chaves_canceladas)
     except: return []
 
 # --- INTERFACE ---
-st.markdown("<h1>💎 DIAMOND TAX</h1>", unsafe_allow_html=True)
+st.markdown("<h1>💎 MERCADOR</h1>", unsafe_allow_html=True)
 
 # SEÇÃO SEMPRE VISÍVEL: PASSO A PASSO E OBJETIVOS
 with st.container():
@@ -296,6 +296,6 @@ if st.session_state['confirmado']:
                 ws.conditional_format('O3:T29', {'type':'formula', 'criteria':'=LEN($P3)>0', 'format':f_pink_light})
 
             st.success("💎 Apuração Concluída!")
-            st.download_button("📥 BAIXAR RELATÓRIO DIAMANTE", output.getvalue(), "Diamond_Tax_Audit.xlsx")
+            st.download_button("📥 BAIXAR RELATÓRIO DIAMANTE", output.getvalue(), "Mercador.xlsx")
 else:
     st.warning("👈 Insira o CNPJ na barra lateral para começar.")
