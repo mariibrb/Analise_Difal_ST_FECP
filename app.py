@@ -10,7 +10,7 @@ import random
 st.set_page_config(page_title="MERCADOR", layout="wide", page_icon="🗺️")
 
 # --- CONFIGURAÇÃO DE APARÊNCIA (COR ROSA ESPECIFICADA) ---
-COR_ROSA_CLARINHO = '#FFEBFA'
+COR_ROSA_CLARINHO = '#FFEBFA' 
 
 def aplicar_estilo_rihanna_original():
     st.markdown("""
@@ -123,10 +123,7 @@ def processar_xml(content, cnpj_auditado, chaves_processadas, chaves_canceladas)
         cnpj_alvo = re.sub(r'\D', '', cnpj_auditado)
         tp_nf = buscar_tag_recursiva('tpNF', ide)
         tipo = "SAIDA" if (cnpj_emit == cnpj_alvo and tp_nf == "1") else "ENTRADA"
-        
-        # LOGICA DE IEST MANTIDA
         iest_doc = buscar_tag_recursiva('IEST', emit) if tipo == "SAIDA" else buscar_tag_recursiva('IEST', dest)
-        
         uf_fiscal = buscar_tag_recursiva('UF', dest) if tipo == "SAIDA" else (buscar_tag_recursiva('UF', dest) if buscar_tag_recursiva('UF', emit) == 'SP' else buscar_tag_recursiva('UF', emit))
         detalhes = []
         for det in root.findall('.//det'):
@@ -145,6 +142,7 @@ def processar_xml(content, cnpj_auditado, chaves_processadas, chaves_canceladas)
 # --- INTERFACE ---
 st.markdown("<h1>🗺️ MERCADOR</h1>", unsafe_allow_html=True)
 
+# SEÇÃO SEMPRE VISÍVEL: PASSO A PASSO E OBJETIVOS
 with st.container():
     m_col1, m_col2 = st.columns(2)
     with m_col1:
@@ -152,7 +150,7 @@ with st.container():
         <div class="instrucoes-card">
             <h3>📖 Passo a Passo</h3>
             <ol>
-                <li><b>Relatório SIEG:</b> Suba os arquivos CSV ou XLSX de Status para filtrar notas canceladas ou rejeitadas.</li>
+                <li><b>Relatório SIEG:</b> Suba os arquivos CSV ou XLSX de Status para filtrar notas canceladas (pode ser mais de um).</li>
                 <li><b>Arquivos XML:</b> Arraste seus arquivos XML ou pastas ZIP para a área de upload.</li>
                 <li><b>Processamento:</b> Clique no botão <b>"INICIAR APURAÇÃO DIAMANTE"</b>.</li>
                 <li><b>Download:</b> Baixe o Excel final com as abas de listagem e resumo por estado.</li>
@@ -190,34 +188,39 @@ with st.sidebar:
 
 if st.session_state['confirmado']:
     st.info(f"🏢 Empresa: {cnpj_limpo}")
+    # ALTERADO: accept_multiple_files=True para permitir vários relatórios de status
     files_status = st.file_uploader("1. Suba os relatórios de STATUS (SIEG)", type=['csv', 'xlsx'], accept_multiple_files=True)
     uploaded_files = st.file_uploader("2. Arraste seus XMLs ou ZIP aqui:", accept_multiple_files=True)
     
     chaves_canceladas = set()
     
+    # Processamento de Múltiplos Arquivos de Status
     if files_status:
         for f_status in files_status:
             try:
+                # AJUSTADO: header=1 para ler a linha 2 (onde estão as colunas no seu print)
                 if f_status.name.endswith('.csv'):
                     df_status = pd.read_csv(f_status, header=1, sep=',', encoding='utf-8', on_bad_lines='skip')
                 else:
                     df_status = pd.read_excel(f_status, header=1)
                 
+                # Normalizar nomes das colunas para evitar erros de case/espaço
                 df_status.columns = df_status.columns.str.strip().str.upper()
 
+                # Tenta localizar as colunas pelo nome
                 col_status = next((c for c in df_status.columns if 'STATUS' in c), None)
                 col_chave = next((c for c in df_status.columns if 'CHAVE' in c), None)
 
                 if col_status and col_chave:
-                    # AJUSTE: Agora busca por CANCEL ou REJEITADA
-                    mask = (
-                        df_status[col_status].astype(str).str.upper().str.contains("CANCEL", na=False) | 
-                        df_status[col_status].astype(str).str.upper().str.contains("REJEIT", na=False)
-                    )
+                    # AJUSTADO: Busca por "CANCEL" ou "REJEI"
+                    mask = (df_status[col_status].astype(str).str.upper().str.contains("CANCEL", na=False) | 
+                            df_status[col_status].astype(str).str.upper().str.contains("REJEI", na=False))
+                    
+                    # Extrai as chaves deste arquivo e adiciona ao conjunto total
                     novas_chaves = set(
                         df_status.loc[mask, col_chave]
                         .astype(str)
-                        .str.replace(r'\D', '', regex=True)
+                        .str.replace(r'\D', '', regex=True) # Remove NFe, espaços, letras
                         .str.strip()
                     )
                     chaves_canceladas.update(novas_chaves)
@@ -228,7 +231,7 @@ if st.session_state['confirmado']:
                 st.error(f"Erro no relatório {f_status.name}: {e}")
         
         if chaves_canceladas:
-            st.success(f"✅ {len(chaves_canceladas)} notas (Canceladas/Rejeitadas) identificadas.")
+            st.success(f"✅ {len(chaves_canceladas)} notas (Canceladas/Rejeitadas) identificadas nos relatórios.")
 
     if uploaded_files and st.button("🚀 INICIAR APURAÇÃO DIAMANTE"):
         dados_totais, chaves_unicas = [], set()
@@ -251,7 +254,7 @@ if st.session_state['confirmado']:
                 df_listagem.to_excel(writer, sheet_name='LISTAGEM_XML', index=False)
                 
                 workbook = writer.book
-                ws = workbook.add_worksheet('MERCADOR')
+                ws = workbook.add_worksheet('DIFAL_ST_FECP')
                 ws.hide_gridlines(2)
 
                 f_tit = workbook.add_format({'bold':True, 'bg_color':'#FF69B4', 'font_color':'#FFFFFF', 'border':1, 'align':'center'})
@@ -285,7 +288,7 @@ if st.session_state['confirmado']:
                         ws.write_formula(row, i+9, f'=SUMIFS(LISTAGEM_XML!{col_let}:{col_let}, LISTAGEM_XML!D:D, "{uf}", LISTAGEM_XML!C:C, "ENTRADA")', f_num)
                         col_s, col_e = chr(65 + i + 2), chr(65 + i + 9)
                         if i == 1: 
-                            f_sal = f'=IF(B{row+1}<>"", IF(A{row+1}="RJ", ({col_s}{row+1}-{col_e}{row+1})-(E{row+1}-L{row+1}), {col_s}{row+1}-{col_e}{row+1}), {col_s}{row+1}-{col_e}{row+1})'
+                            f_sal = f'=IF(B{row+1}<>"", IF(A{row+1}="RJ", ({col_s}{row+1}-{col_e}{row+1})-(E{row+1}-L{row+1}), {col_s}{row+1}-{col_e}{row+1}), {col_s}{row+1})'
                         else:
                             f_sal = f'=IF(B{row+1}<>"", {col_s}{row+1}-{col_e}{row+1}, {col_s}{row+1})'
                         ws.write_formula(row, i+16, f_sal, f_num)
@@ -295,6 +298,6 @@ if st.session_state['confirmado']:
                 ws.conditional_format('O3:T29', {'type':'formula', 'criteria':'=LEN($P3)>0', 'format':f_pink_light})
 
             st.success("💎 Apuração Concluída!")
-            st.download_button("📥 RECOLHER RELATÓRIO DO MERCADOR", output.getvalue(), "Mercador.xlsx")
+            st.download_button("📥 BAIXAR RELATÓRIO DIAMANTE", output.getvalue(), "Mercador.xlsx")
 else:
     st.warning("👈 Insira o CNPJ na barra lateral para começar.")
