@@ -123,7 +123,10 @@ def processar_xml(content, cnpj_auditado, chaves_processadas, chaves_canceladas)
         cnpj_alvo = re.sub(r'\D', '', cnpj_auditado)
         tp_nf = buscar_tag_recursiva('tpNF', ide)
         tipo = "SAIDA" if (cnpj_emit == cnpj_alvo and tp_nf == "1") else "ENTRADA"
+        
+        # LOGICA RESTAURADA: Busca recursiva de IEST
         iest_doc = buscar_tag_recursiva('IEST', emit) if tipo == "SAIDA" else buscar_tag_recursiva('IEST', dest)
+        
         uf_fiscal = buscar_tag_recursiva('UF', dest) if tipo == "SAIDA" else (buscar_tag_recursiva('UF', dest) if buscar_tag_recursiva('UF', emit) == 'SP' else buscar_tag_recursiva('UF', emit))
         detalhes = []
         for det in root.findall('.//det'):
@@ -142,7 +145,6 @@ def processar_xml(content, cnpj_auditado, chaves_processadas, chaves_canceladas)
 # --- INTERFACE ---
 st.markdown("<h1>🗺️ MERCADOR</h1>", unsafe_allow_html=True)
 
-# SEÇÃO SEMPRE VISÍVEL: PASSO A PASSO E OBJETIVOS
 with st.container():
     m_col1, m_col2 = st.columns(2)
     with m_col1:
@@ -196,7 +198,7 @@ if st.session_state['confirmado']:
     if files_status:
         for f_status in files_status:
             try:
-                # CORREÇÃO HEADER: header=1 lê a 2ª linha do arquivo (onde estão os títulos do print)
+                # AJUSTE PARA O PRINT: header=1 lê a linha 2 corretamente
                 if f_status.name.endswith('.csv'):
                     df_status = pd.read_csv(f_status, header=1, sep=',', encoding='utf-8', on_bad_lines='skip')
                 else:
@@ -204,7 +206,7 @@ if st.session_state['confirmado']:
                 
                 df_status.columns = df_status.columns.str.strip().str.upper()
 
-                # CORREÇÃO MAPEAMENTO: Busca flexível por CHAVE e STATUS
+                # Busca flexível por CHAVE e STATUS conforme o print enviado
                 col_status = next((c for c in df_status.columns if 'STATUS' in c), None)
                 col_chave = next((c for c in df_status.columns if 'CHAVE' in c), None)
 
@@ -281,7 +283,7 @@ if st.session_state['confirmado']:
                         ws.write_formula(row, i+9, f'=SUMIFS(LISTAGEM_XML!{col_let}:{col_let}, LISTAGEM_XML!D:D, "{uf}", LISTAGEM_XML!C:C, "ENTRADA")', f_num)
                         col_s, col_e = chr(65 + i + 2), chr(65 + i + 9)
                         if i == 1: 
-                            f_sal = f'=IF(B{row+1}<>"", IF(A{row+1}="RJ", ({col_s}{row+1}-{col_e}{row+1})-(E{row+1}-L{row+1}), {col_s}{row+1}-{col_e}{row+1}), {col_s}{row+1}-{col_e}{row+1})'
+                            f_sal = f'=IF(B{row+1}<>"", IF(A{row+1}="RJ", ({col_s}{row+1}-{col_e}{row+1})-(E{row+1}-L{row+1}), {col_s}{row+1}-{col_e}{row+1}), {col_s}{row+1})'
                         else:
                             f_sal = f'=IF(B{row+1}<>"", {col_s}{row+1}-{col_e}{row+1}, {col_s}{row+1})'
                         ws.write_formula(row, i+16, f_sal, f_num)
