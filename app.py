@@ -10,7 +10,7 @@ import random
 st.set_page_config(page_title="MERCADOR", layout="wide", page_icon="🗺️")
 
 # --- CONFIGURAÇÃO DE APARÊNCIA (COR ROSA ESPECIFICADA) ---
-COR_ROSA_CLARINHO = '#FFEBFA' 
+COR_ROSA_CLARINHO = '#FFEBFA'
 
 def aplicar_estilo_rihanna_original():
     st.markdown("""
@@ -188,37 +188,32 @@ with st.sidebar:
 
 if st.session_state['confirmado']:
     st.info(f"🏢 Empresa: {cnpj_limpo}")
-    # ALTERADO: accept_multiple_files=True para permitir vários relatórios de status
     files_status = st.file_uploader("1. Suba os relatórios de STATUS (SIEG)", type=['csv', 'xlsx'], accept_multiple_files=True)
     uploaded_files = st.file_uploader("2. Arraste seus XMLs ou ZIP aqui:", accept_multiple_files=True)
     
     chaves_canceladas = set()
     
-    # Processamento de Múltiplos Arquivos de Status
     if files_status:
         for f_status in files_status:
             try:
-                # O cabeçalho real está na linha 3 (índice 2)
+                # CORREÇÃO HEADER: header=1 lê a 2ª linha do arquivo (onde estão os títulos do print)
                 if f_status.name.endswith('.csv'):
-                    # Lê pulando as primeiras linhas de metadados
-                    df_status = pd.read_csv(f_status, header=2, sep=',', encoding='utf-8', on_bad_lines='skip')
+                    df_status = pd.read_csv(f_status, header=1, sep=',', encoding='utf-8', on_bad_lines='skip')
                 else:
-                    df_status = pd.read_excel(f_status, header=2)
+                    df_status = pd.read_excel(f_status, header=1)
                 
-                # Normalizar nomes das colunas para evitar erros de case/espaço
                 df_status.columns = df_status.columns.str.strip().str.upper()
 
-                # Tenta localizar as colunas pelo nome
+                # CORREÇÃO MAPEAMENTO: Busca flexível por CHAVE e STATUS
                 col_status = next((c for c in df_status.columns if 'STATUS' in c), None)
                 col_chave = next((c for c in df_status.columns if 'CHAVE' in c), None)
 
                 if col_status and col_chave:
                     mask = df_status[col_status].astype(str).str.upper().str.contains("CANCEL", na=False)
-                    # Extrai as chaves deste arquivo e adiciona ao conjunto total
                     novas_chaves = set(
                         df_status.loc[mask, col_chave]
                         .astype(str)
-                        .str.replace(r'\D', '', regex=True) # Remove NFe, espaços, letras
+                        .str.replace(r'\D', '', regex=True)
                         .str.strip()
                     )
                     chaves_canceladas.update(novas_chaves)
@@ -252,7 +247,7 @@ if st.session_state['confirmado']:
                 df_listagem.to_excel(writer, sheet_name='LISTAGEM_XML', index=False)
                 
                 workbook = writer.book
-                ws = workbook.add_worksheet('DIFAL_ST_FECP')
+                ws = workbook.add_worksheet('MERCADOR')
                 ws.hide_gridlines(2)
 
                 f_tit = workbook.add_format({'bold':True, 'bg_color':'#FF69B4', 'font_color':'#FFFFFF', 'border':1, 'align':'center'})
@@ -286,7 +281,7 @@ if st.session_state['confirmado']:
                         ws.write_formula(row, i+9, f'=SUMIFS(LISTAGEM_XML!{col_let}:{col_let}, LISTAGEM_XML!D:D, "{uf}", LISTAGEM_XML!C:C, "ENTRADA")', f_num)
                         col_s, col_e = chr(65 + i + 2), chr(65 + i + 9)
                         if i == 1: 
-                            f_sal = f'=IF(B{row+1}<>"", IF(A{row+1}="RJ", ({col_s}{row+1}-{col_e}{row+1})-(E{row+1}-L{row+1}), {col_s}{row+1}-{col_e}{row+1}), {col_s}{row+1})'
+                            f_sal = f'=IF(B{row+1}<>"", IF(A{row+1}="RJ", ({col_s}{row+1}-{col_e}{row+1})-(E{row+1}-L{row+1}), {col_s}{row+1}-{col_e}{row+1}), {col_s}{row+1}-{col_e}{row+1})'
                         else:
                             f_sal = f'=IF(B{row+1}<>"", {col_s}{row+1}-{col_e}{row+1}, {col_s}{row+1})'
                         ws.write_formula(row, i+16, f_sal, f_num)
@@ -296,6 +291,6 @@ if st.session_state['confirmado']:
                 ws.conditional_format('O3:T29', {'type':'formula', 'criteria':'=LEN($P3)>0', 'format':f_pink_light})
 
             st.success("💎 Apuração Concluída!")
-            st.download_button("📥 BAIXAR RELATÓRIO DIAMANTE", output.getvalue(), "Mercador.xlsx")
+            st.download_button("📥 RECOLHER RELATÓRIO DO MERCADOR", output.getvalue(), "Mercador.xlsx")
 else:
     st.warning("👈 Insira o CNPJ na barra lateral para começar.")
