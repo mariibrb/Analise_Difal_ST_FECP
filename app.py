@@ -200,7 +200,6 @@ def processar_xml(content, cnpj_auditado, chaves_processadas, chaves_canceladas)
         xml_str = re.sub(r'\sxmlns(:\w+)?="[^"]+"', '', content.decode('utf-8', errors='ignore'))
         root = ET.fromstring(xml_str)
         infNFe = root.find('.//infNFe')
-        # Limpeza rigorosa da chave
         chave_raw = infNFe.attrib.get('Id', '')[3:] if infNFe is not None else ""
         chave = re.sub(r'\D', '', chave_raw)
         
@@ -254,7 +253,7 @@ with st.container():
         <div class="instrucoes-card">
             <h3>📖 Passo a Passo</h3>
             <ol>
-                <li><b>Relatório SIEG:</b> Suba os arquivos CSV ou XLSX de Status para filtrar notas canceladas.</li>
+                <li><b>Relatório SIEG:</b> Suba os arquivos de Status (o Mercador encontrará as colunas automaticamente).</li>
                 <li><b>Arquivos XML:</b> Arraste seus arquivos XML ou pastas ZIP.</li>
                 <li><b>Processamento:</b> Clique no botão <b>"INICIAR APURAÇÃO DIAMANTE"</b>.</li>
                 <li><b>Download:</b> Baixe o Excel final com os saldos apurados.</li>
@@ -269,7 +268,7 @@ with st.container():
                 <li><b>Cálculo DIFAL/ST/FCP:</b> Apuração automática por UF.</li>
                 <li><b>Regra RJ:</b> Abatimento automático de FCP no DIFAL.</li>
                 <li><b>Relatório Inteligente:</b> Excel formatado com destaque Rosa nas IESTs.</li>
-                <li><b>Aba CANCELADAS_SIEG:</b> Registro detalhado de todas as notas descartadas.</li>
+                <li><b>Aba CANCELADAS_SIEG:</b> Registro detalhado de notas descartadas.</li>
             </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -302,11 +301,29 @@ if st.session_state['confirmado']:
     if files_status:
         for f_status in files_status:
             try:
-                df_status = pd.read_excel(f_status, header=1) if f_status.name.endswith('.xlsx') else pd.read_csv(f_status, header=1)
-                df_status.columns = [str(c).strip().upper() for c in df_status.columns]
+                # --- BUSCA AUTOMÁTICA DE CABEÇALHO ---
+                # Lê as primeiras 20 linhas para encontrar onde estão as colunas
+                temp_df = pd.read_excel(f_status, header=None, nrows=20) if f_status.name.endswith('.xlsx') else pd.read_csv(f_status, header=None, nrows=20)
                 
-                col_status = next((c for c in df_status.columns if 'STATUS' in c), None)
-                col_chave = next((c for c in df_status.columns if 'CHAVE' in c), None)
+                header_idx = 0
+                found_cols = False
+                for i, row in temp_df.iterrows():
+                    row_str = [str(cell).upper() for cell in row]
+                    # Procura por palavras chave na mesma linha
+                    if (any('CHAVE' in s for s in row_str) or any('ID' in s for s in row_str)) and (any('STATUS' in s for s in row_str) or any('SITUA' in s for s in row_str)):
+                        header_idx = i
+                        found_cols = True
+                        break
+                
+                # Lê o arquivo completo com o header detectado
+                if f_status.name.endswith('.xlsx'):
+                    df_status = pd.read_excel(f_status, header=header_idx)
+                else:
+                    df_status = pd.read_csv(f_status, header=header_idx)
+
+                df_status.columns = [str(c).strip().upper() for c in df_status.columns]
+                col_status = next((c for c in df_status.columns if 'STATUS' in c or 'SITUA' in c), None)
+                col_chave = next((c for c in df_status.columns if 'CHAVE' in c or 'ID' in c), None)
 
                 if col_status and col_chave:
                     s_status, s_chave = df_status[col_status], df_status[col_chave]
@@ -318,13 +335,9 @@ if st.session_state['confirmado']:
                             
                             if "CANCEL" in txt_status.upper() or "REJEI" in txt_status.upper():
                                 chaves_canceladas.add(k)
-                                linhas_canceladas.append({
-                                    'CHAVE': k, 
-                                    'ARQUIVO': f_status.name, 
-                                    'STATUS_SIEG': txt_status
-                                })
+                                linhas_canceladas.append({'CHAVE': k, 'ARQUIVO': f_status.name, 'STATUS_SIEG': txt_status})
                 else:
-                    st.warning(f"⚠️ Colunas não identificadas no arquivo {f_status.name}.")
+                    st.warning(f"⚠️ Aviso: Não consegui identificar as colunas no arquivo {f_status.name}.")
             except Exception as e: st.error(f"Erro no SIEG: {e}")
             
         if chaves_canceladas:
@@ -348,8 +361,6 @@ if st.session_state['confirmado']:
         if dados_totais:
             output = io.BytesIO()
             df_listagem = pd.DataFrame(dados_totais)
-            
-            # Preenchimento garantido da coluna de Status de Autenticidade
             df_listagem['STATUS_AUTENTICIDADE'] = df_listagem['CHAVE'].map(lambda x: mapa_autenticidade.get(str(x), 'AUTORIZADA'))
             
             ufs_resumo = sorted({u for u in df_listagem['UF_FISCAL'] if u})
@@ -360,8 +371,6 @@ if st.session_state['confirmado']:
 
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df_listagem.to_excel(writer, sheet_name='LISTAGEM_XML', index=False)
-                
-                # Aba de Canceladas preenchida rigorosamente
                 df_cancel_final = pd.DataFrame(linhas_canceladas)
                 if df_cancel_final.empty:
                     df_cancel_final = pd.DataFrame(columns=['CHAVE', 'ARQUIVO', 'STATUS_SIEG'])
@@ -371,7 +380,7 @@ if st.session_state['confirmado']:
                 ws = workbook.add_worksheet('DIFAL_ST_FECP')
                 ws.hide_gridlines(2)
                 f_tit = workbook.add_format({'bold':True, 'bg_color':'#FF69B4', 'font_color':'#FFFFFF', 'border':1, 'align':'center'})
-                f_head = workbook.add_format({'bold':True, 'bg_color':'#F8F9FA', 'border':1, 'align':'center'})
+                f_head = workbook.add_format({'bold':True, 'bg_color':'#F8F9FA', 'font_color':'#6C757D', 'border':1, 'align':'center'})
                 f_num = workbook.add_format({'num_format':'#,##0.00', 'border':1})
                 f_uf = workbook.add_format({'border':1, 'align':'center'})
                 f_pink = workbook.add_format({'bg_color': COR_ROSA_CLARINHO, 'border': 1})
